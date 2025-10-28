@@ -29,9 +29,17 @@ A **.NET-based intelligent agent framework** that connects to multiple tools and
 ## 🏗️ Architecture Overview
 
 ```mermaid
+---
+title: Multi-Tool AI Azure Agent
+config:
+  theme: redux
+  layout: dagre
+---
 flowchart TD
     A("Console App") --> B("Azure AI foundry / AI Agent")
-    B --> C("Multi-Tool AI Agent (NET Core)")
-    C --> D["Local KPI API"] & E["Weather REST API"]
-    E --> G["Response Engine / Insights Generator"]
+    B --> C("Multi-Tool AI Agent (.NET Core)")
+    C --> M{"Decide tool based on the user request"}
+    M --> D["Local KPI API"] & E["Weather REST API"]
+    E --> G["Response Engine"]
     D --> G
+
