@@ -42,7 +42,7 @@ flowchart TD
     M --> D["Local KPI API"] & E["Weather REST API"]
     E --> G["Response Engine"]
     D --> G
-
+```
 ---
 
 ## Try these prompts (see multi-tool routing)
