@@ -43,3 +43,17 @@ flowchart TD
     E --> G["Response Engine"]
     D --> G
 
+---
+
+## Try these prompts (see multi-tool routing)
+
+- What's the temperature in Herndon in F?
+- Weather check for Chennai in c
+- Compare MRR and NPS, and also tell me the current temperature in Dublin.
+- Define NPS and give me the weather in Seattle.
+
+---
+## Sample: 
+<img width="800" height="410" alt="image" src="https://github.com/user-attachments/assets/3547004a-b673-4daf-82bd-2d7f6a3206cb" />
+
+---
