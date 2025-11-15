@@ -6,49 +6,35 @@ This agent understands natural language, determines which tool to invoke, combin
 
 ---
 **Capabilities**
+
 🧠 1. Reasoning & Orchestration (GPT-5)
+- Natural language understanding
+- Dynamic tool selection
+- Multi-step, multi-tool reasoning
+- TL;DR summaries and structured output
 
-Natural language understanding
-
-Dynamic tool selection
-
-Multi-step, multi-tool reasoning
-
-TL;DR summaries and structured output
 
 📊 2. KPI Intelligence (C# Tool)
-
-Quickly returns definitions for KPIs (MRR, NPS, etc.)
-
-Lightweight and local for instant response
+- Quickly returns definitions for KPIs (MRR, NPS, etc.)
+- Lightweight and local for instant response
 
 🌦️ 3. Real-Time Weather (REST Tool)
-
-Uses the Open-Meteo geocoding + forecast API
-
-Returns live temperature (C/F) for any location
-
-Fully stateless and latency-optimized
+- Uses the Open-Meteo geocoding + forecast API
+- Returns live temperature (C/F) for any location
+- Fully stateless and latency-optimized
 
 🖼️ 4. Image Generation (GPT-Image-1-Mini)
-
-Creates visuals based on user prompts
-
-Ideal for dashboards, summaries, and thumbnails
+- Creates visuals based on user prompts
+- Ideal for dashboards, summaries, and thumbnails
 
 🔊 5. Audio Narration (GPT-Audio-Mini)
-
-Converts summaries to high-quality speech WAV files
-
-Great for reports, voice assistants, and daily briefings
+- Converts summaries to high-quality speech WAV files
+- Great for reports, voice assistants, and daily briefings
 
 🎬 6. Video Generation (Sora-style Endpoint)
-
-Generates MP4 videos from prompts
-
-Produces dynamic, short clips (e.g., 3–10 seconds)
-
-Automatic HTML “playground” viewer included
+- Generates MP4 videos from prompts
+- Produces dynamic, short clips (e.g., 3–10 seconds)
+- Automatic HTML “playground” viewer included
 
 ---
 
@@ -109,10 +95,10 @@ flowchart TD
 1. .NET 8 SDK
 1. Azure AI Foundry Project (or Azure OpenAI Resource)
 1. Deployed models:
-1.1. gpt-5
-1.1. gpt-image-1-mini
-1.1. gpt-audio-mini
-1.1. video-capable deployment (preview)
+- GPT-5
+- GPT-Image-1-mini
+- GPT-Audio-mini
+- Sora (preview)
 
 ---
 
@@ -122,7 +108,7 @@ flowchart TD
 1. Multi-tool agent patterns
 1. Tool orchestration
 1. Real-time REST integration
-1. Multimodal generation across text, audio, image, video
+1. Multimodal generation across text, audio, image, and video
 1. .NET best practices for AI workloads
 1. Azure-native authentication and design
 
