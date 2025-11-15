@@ -7,7 +7,8 @@ using Azure.AI.OpenAI;
 using Azure.Identity;
 using Microsoft.Extensions.Configuration;
 using OpenAI;           // OpenAI v1 client options
-using OpenAI.Chat;      // ChatClient, ChatMessage, ChatTool, etc.
+using OpenAI.Chat;
+using OpenAI.Images;      // ChatClient, ChatMessage, ChatTool, etc.
 
 internal class Program
 {
@@ -90,6 +91,14 @@ internal class Program
         "Return: TL;DR (1 line), bullet points, and 'Sources' at the end.";
     static System.Collections.Generic.List<ChatMessage> history = new();
 
+    // Added: hold inference base + key for raw HTTP speech
+    static string inferenceBase = string.Empty; // ends with /openai/v1/
+    static string? apiKeyForRaw;
+    static string? apiKeyForVideo;
+    static string speechModel = string.Empty;   // voice model/deployment for speech endpoint
+    static string videoModel = string.Empty;    // video model/deployment
+    static string videoInferenceBase = string.Empty; // separate base for video if provided
+
     // Tools
     static ChatTool lookupKpiTool = ChatTool.CreateFunctionTool(
         functionName: "lookup_kpi",
@@ -108,6 +117,52 @@ internal class Program
             "},\"required\":[\"location\"]}"
         ));
 
+    static ChatTool generateImageTool = ChatTool.CreateFunctionTool(
+        functionName: "generate_image",
+        functionDescription: "Generate an image based on a textual description.",
+        functionParameters: BinaryData.FromString("""
+        {
+          "type": "object",
+          "properties": {
+            "prompt": { "type": "string", "description": "Image description" }
+          },
+            "required": ["prompt"]
+        }
+        """
+        )
+    );
+
+    static ChatTool speakTool = ChatTool.CreateFunctionTool(
+        functionName: "speak_summary",
+        functionDescription: "Convert a text summary into spoken audio.",
+        functionParameters: BinaryData.FromString("""
+        {
+          "type": "object",
+          "properties": {
+            "text": { "type": "string", "description": "Text to narrate" }
+          },
+          "required": ["text"]
+        }
+        """
+        )
+    );
+
+    static ChatTool videoTool = ChatTool.CreateFunctionTool(
+        functionName: "generate_video",
+        functionDescription: "Generate a short video clip (mp4) from a text prompt and provide a local HTML playground to view it.",
+        functionParameters: BinaryData.FromString("""
+        {
+          "type": "object",
+          "properties": {
+            "prompt": { "type": "string", "description": "Video description" },
+            "durationSeconds": { "type": "integer", "description": "Requested duration (<=10)", "minimum": 1, "maximum": 10 }
+          },
+          "required": ["prompt"]
+        }
+        """
+        )
+    );
+
     public static async Task Main()
     {
         // ===== Config =====
@@ -118,11 +173,22 @@ internal class Program
 
         var projectEndpoint = config["projectEndpoint"];   // e.g., https://...services.ai.azure.com/api/projects/firstProject
         var resourceEndpoint = config["endpoint"];         // e.g., https://<resource>.openai.azure.com/
-        var deployment = config["model"];                  // DEPLOYMENT name
+        var deployment = config["model"];                  // DEPLOYMENT name (chat)
+        speechModel = config["Speech_Model"] ?? config["speechModel"] ?? config["Audio_Model"] ?? string.Empty; // attempt multiple keys
+        videoModel = config["Video_Model"] ?? config["videoModel"] ?? string.Empty;
+        videoInferenceBase = config["videoEndpoint"] ?? config["videoEndpoint"] ?? resourceEndpoint ?? string.Empty;
         if (string.IsNullOrWhiteSpace(deployment))
         {
             WriteError("Missing 'model' (deployment name) in config.");
             return;
+        }
+        if (string.IsNullOrWhiteSpace(speechModel))
+        {
+            WriteWarn("No speech model configured (Speech_Model). speak_summary tool will be disabled.");
+        }
+        if (string.IsNullOrWhiteSpace(videoModel))
+        {
+            WriteWarn("No video model configured (Video_Model). generate_video tool will be disabled.");
         }
 
         // Build ChatClient for either Project or classic Resource mode
@@ -170,6 +236,11 @@ internal class Program
             };
             opts.Tools.Add(lookupKpiTool);
             opts.Tools.Add(getWeatherTool);
+            opts.Tools.Add(generateImageTool);
+            if (!string.IsNullOrWhiteSpace(speechModel))
+                opts.Tools.Add(speakTool); // only if configured
+            if (!string.IsNullOrWhiteSpace(videoModel))
+                opts.Tools.Add(videoTool); // only if configured
 
             using var spin = new Spinner("thinking…");
             var swTotal = Stopwatch.StartNew();
@@ -190,46 +261,39 @@ internal class Program
             .AddJsonFile("appsettings.json", optional: true)
             .AddUserSecrets<Program>(optional: true)
             .Build();
-        // Prefer explicit API key if set (fast and unambiguous)
-        var apiKey = config["AZURE_OPENAI_KEY"];
-
+        apiKeyForRaw = config["AZURE_OPENAI_KEY"]; // store globally for raw REST calls
+        apiKeyForVideo = config["Azure_Video_Key"];
         if (!string.IsNullOrWhiteSpace(projectEndpoint))
         {
-            // Project mode:
-            // Project URL → https://<res>.services.ai.azure.com/api/projects/<proj>
-            // Inference base → https://<res>.services.ai.azure.com/openai/v1/
             var u = new Uri(projectEndpoint, UriKind.Absolute);
-            var baseUrl = $"{u.Scheme}://{u.Host}/openai/v1/";
+            inferenceBase = $"{u.Scheme}://{u.Host}/openai/v1/"; // project inference base
             WriteInfo($"project mode: {projectEndpoint}");
-            WriteInfo($"inference base: {baseUrl}");
+            WriteInfo($"inference base: {inferenceBase}");
             WriteInfo("auth: api-key");
             return new ChatClient(
                 model: deployment,
-                credential: new ApiKeyCredential(apiKey),
-                options: new OpenAIClientOptions { Endpoint = new Uri(baseUrl) });
-           
+                credential: new ApiKeyCredential(apiKeyForRaw),
+                options: new OpenAIClientOptions { Endpoint = new Uri(inferenceBase) });
         }
         else if (!string.IsNullOrWhiteSpace(resourceEndpoint))
         {
-            // Classic Azure OpenAI resource mode
-            var baseUrl = new Uri(new Uri(resourceEndpoint), "/openai/v1/").ToString();
+            inferenceBase = new Uri(new Uri(resourceEndpoint), "/openai/v1/").ToString();
             WriteInfo($"resource mode: {resourceEndpoint}");
-            WriteInfo($"inference base: {baseUrl}");
+            WriteInfo($"inference base: {inferenceBase}");
 
-            if (!string.IsNullOrWhiteSpace(apiKey))
+            if (!string.IsNullOrWhiteSpace(apiKeyForRaw))
             {
                 WriteInfo("auth: api-key");
                 return new ChatClient(
                     model: deployment,
-                    credential: new ApiKeyCredential(apiKey),
-                    options: new OpenAIClientOptions { Endpoint = new Uri(baseUrl) });
+                    credential: new ApiKeyCredential(apiKeyForRaw),
+                    options: new OpenAIClientOptions { Endpoint = new Uri(inferenceBase) });
             }
             else
             {
-                // Or use AzureOpenAIClient helper + Entra ID
                 var aoai = new AzureOpenAIClient(new Uri(resourceEndpoint), new DefaultAzureCredential());
-                // probe via aoai to catch RBAC issues fast
                 await ProbeAsync(aoai.GetChatClient(deployment));
+                // In AAD case we don't have api-key for raw speech; speech tool will warn
                 return aoai.GetChatClient(deployment);
             }
         }
@@ -237,6 +301,20 @@ internal class Program
         {
             throw new InvalidOperationException("Provide either 'projectEndpoint' or 'endpoint' in appsettings.json.");
         }
+    }
+
+    static async Task<ImageClient> GetImageClient()
+    {
+        var config = new ConfigurationBuilder()
+           .AddJsonFile("appsettings.json", optional: true)
+           .AddUserSecrets<Program>(optional: true)
+           .Build();
+        var apiKey = config["AZURE_OPENAI_KEY"];
+        var deployment = config["Image_Model"];
+        var projectEndpoint = config["projectEndpoint"];
+        var u = new Uri(projectEndpoint, UriKind.Absolute);
+        var baseUrl = $"{u.Scheme}://{u.Host}/openai/v1/";
+        return new ImageClient(model: deployment, credential: new ApiKeyCredential(apiKey), options: new OpenAI.OpenAIClientOptions { Endpoint = new Uri(baseUrl) });
     }
 
     static async Task ProbeAsync(ChatClient client)
@@ -321,7 +399,6 @@ internal class Program
 
             if (completion.FinishReason == ChatFinishReason.ToolCalls)
             {
-                // capture the assistant message with tool calls
                 convo.Add(new AssistantChatMessage(completion));
 
                 foreach (ChatToolCall call in completion.ToolCalls)
@@ -366,6 +443,186 @@ internal class Program
                                     });
                                     break;
                                 }
+                            case "generate_image":
+                                {
+                                    using var args = JsonDocument.Parse(call.FunctionArguments.ToString());
+                                    var imagePrompt = args.RootElement.GetProperty("prompt").GetString();
+                                    var imageClient = await GetImageClient();
+                                    var result = await imageClient.GenerateImageAsync(imagePrompt);
+                                    var filePath = $"image_{DateTime.Now:HHmmss}.png";
+                                    await File.WriteAllBytesAsync(filePath, result.Value.ImageBytes.ToArray());
+                                    output = JsonSerializer.Serialize(new { image = filePath, source = "gpt-image-1-mini" });
+                                    break;
+                                }
+                            case "speak_summary":
+                                {
+                                    using var args = JsonDocument.Parse(call.FunctionArguments.ToString());
+                                    var text = args.RootElement.GetProperty("text").GetString() ?? string.Empty;
+                                    if (string.IsNullOrWhiteSpace(speechModel))
+                                    {
+                                        output = "{\"error\":\"speech_not_configured\"}";
+                                        break;
+                                    }
+                                    if (string.IsNullOrWhiteSpace(apiKeyForRaw))
+                                    {
+                                        output = "{\"error\":\"no_api_key_for_speech\"}";
+                                        break;
+                                    }
+                                    spinner.Update("calling speech API…");
+                                    try
+                                    {
+                                        var payload = new
+                                        {
+                                            model = speechModel,
+                                            voice = "alloy",
+                                            input = text,
+                                            format = "wav"
+                                        };
+                                        var json = JsonSerializer.Serialize(payload);
+                                        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+                                        var req = new HttpRequestMessage(HttpMethod.Post, inferenceBase + "audio/speech")
+                                        {
+                                            Content = new StringContent(json, Encoding.UTF8, "application/json")
+                                        };
+                                        req.Headers.Add("api-key", apiKeyForRaw);
+                                        using var resp = await http.SendAsync(req);
+                                        if (!resp.IsSuccessStatusCode)
+                                        {
+                                            var errTxt = await resp.Content.ReadAsStringAsync();
+                                            output = JsonSerializer.Serialize(new { error = "speech_failed", status = (int)resp.StatusCode, body = errTxt });
+                                            break;
+                                        }
+                                        var bytes = await resp.Content.ReadAsByteArrayAsync();
+                                        var path = $"narration_{DateTime.Now:yyyyMMdd_HHmmss}.wav";
+                                        await File.WriteAllBytesAsync(path, bytes);
+                                        output = JsonSerializer.Serialize(new { audio = path, source = speechModel });
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        output = JsonSerializer.Serialize(new { error = "speech_exception", message = ex.Message });
+                                    }
+                                    break;
+                                }
+                            case "generate_video":
+                                {
+                                    using var args = JsonDocument.Parse(call.FunctionArguments.ToString());
+                                    string outputLocal;
+                                    if (string.IsNullOrWhiteSpace(videoModel)) { outputLocal = "{\"error\":\"video_not_configured\"}"; output = outputLocal; break; }
+                                    if (string.IsNullOrWhiteSpace(apiKeyForVideo)) { outputLocal = "{\"error\":\"no_api_key_for_video\"}"; output = outputLocal; break; }
+
+                                    var prompt = args.RootElement.GetProperty("prompt").GetString() ?? string.Empty;
+                                    int duration = 5;
+                                    if (args.RootElement.TryGetProperty("durationSeconds", out var dEl)) duration = Math.Clamp(dEl.GetInt32(), 1, 10);
+                                    int width = 480; // per sample
+                                    int height = 480;
+                                    var apiVersion = "preview";
+
+                                    spinner.Update("creating video job…");
+                                    try
+                                    {
+                                        // Ensure base ends with /openai/v1/
+                                        string baseUrl = videoInferenceBase.EndsWith("/") ? videoInferenceBase : videoInferenceBase + "/";
+                                        if (!baseUrl.Contains("/openai/v1/", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            // If user supplied resource root, append openai/v1/
+                                            baseUrl = (baseUrl.EndsWith("/") ? baseUrl : baseUrl + "/") + "openai/v1/";
+                                        }
+                                        string jobsUrl = baseUrl + $"video/generations/jobs?api-version={apiVersion}";
+                                        var payload = new { prompt, width, height, n_seconds = duration, model = videoModel };
+                                        var json = JsonSerializer.Serialize(payload);
+                                        using var httpVid = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
+                                        var createReq = new HttpRequestMessage(HttpMethod.Post, jobsUrl)
+                                        { Content = new StringContent(json, Encoding.UTF8, "application/json") };
+                                        createReq.Headers.Add("Api-key", apiKeyForVideo);
+                                        using var createResp = await httpVid.SendAsync(createReq);
+                                        var createBody = await createResp.Content.ReadAsStringAsync();
+                                        if (!createResp.IsSuccessStatusCode)
+                                        {
+                                            outputLocal = JsonSerializer.Serialize(new { error = "video_create_failed", status = (int)createResp.StatusCode, body = createBody });
+                                            output = outputLocal; break;
+                                        }
+                                        using var createDoc = JsonDocument.Parse(createBody);
+                                        var jobId = createDoc.RootElement.GetProperty("id").GetString();
+                                        if (string.IsNullOrWhiteSpace(jobId)) { outputLocal = JsonSerializer.Serialize(new { error = "missing_job_id", body = createBody }); output = outputLocal; break; }
+
+                                        spinner.Update($"job {jobId} created; polling…");
+                                        string statusUrl = baseUrl + $"video/generations/jobs/{jobId}?api-version={apiVersion}";
+                                        string status = "unknown";
+                                        JsonDocument? latestStatusDoc = null;
+                                        var pollSw = Stopwatch.StartNew();
+                                        while (pollSw.Elapsed < TimeSpan.FromMinutes(5))
+                                        {
+                                            await Task.Delay(5000);
+                                            spinner.Update($"polling job {jobId}…");
+                                            var statusReq = new HttpRequestMessage(HttpMethod.Get, statusUrl);
+                                            statusReq.Headers.Add("Api-key", apiKeyForVideo);
+                                            using var statusResp = await httpVid.SendAsync(statusReq);
+                                            var statusBody = await statusResp.Content.ReadAsStringAsync();
+                                            if (!statusResp.IsSuccessStatusCode)
+                                            {
+                                                outputLocal = JsonSerializer.Serialize(new { error = "status_failed", status = (int)statusResp.StatusCode, body = statusBody });
+                                                output = outputLocal; break;
+                                            }
+                                            latestStatusDoc?.Dispose();
+                                            latestStatusDoc = JsonDocument.Parse(statusBody);
+                                            status = latestStatusDoc.RootElement.TryGetProperty("status", out var stEl) ? stEl.GetString() ?? "" : "";
+                                            if (status is "succeeded" or "failed" or "cancelled") break;
+                                        }
+                                        if (status != "succeeded")
+                                        {
+                                            outputLocal = JsonSerializer.Serialize(new { error = "job_not_succeeded", job = jobId, finalStatus = status });
+                                            output = outputLocal; latestStatusDoc?.Dispose(); break;
+                                        }
+                                        if (latestStatusDoc is null)
+                                        {
+                                            outputLocal = JsonSerializer.Serialize(new { error = "no_status_doc", job = jobId });
+                                            output = outputLocal; break;
+                                        }
+                                        var generations = latestStatusDoc.RootElement.TryGetProperty("generations", out var gensEl) && gensEl.ValueKind == JsonValueKind.Array ? gensEl : default;
+                                        if (generations.ValueKind != JsonValueKind.Array || generations.GetArrayLength() == 0)
+                                        {
+                                            outputLocal = JsonSerializer.Serialize(new { error = "no_generations", job = jobId });
+                                            output = outputLocal; latestStatusDoc.Dispose(); break;
+                                        }
+                                        var genId = generations[0].TryGetProperty("id", out var genIdEl) ? genIdEl.GetString() : null;
+                                        if (string.IsNullOrWhiteSpace(genId))
+                                        {
+                                            outputLocal = JsonSerializer.Serialize(new { error = "missing_generation_id", job = jobId });
+                                            output = outputLocal; latestStatusDoc.Dispose(); break;
+                                        }
+                                        latestStatusDoc.Dispose();
+
+                                        // Fetch video content
+                                        string contentUrl = baseUrl + $"video/generations/{genId}/content/video?api-version={apiVersion}";
+                                        spinner.Update("downloading video content…");
+                                        var contentReq = new HttpRequestMessage(HttpMethod.Get, contentUrl);
+                                        contentReq.Headers.Add("Api-key", apiKeyForVideo);
+                                        using var contentResp = await httpVid.SendAsync(contentReq);
+                                        if (!contentResp.IsSuccessStatusCode)
+                                        {
+                                            var bodyFail = await contentResp.Content.ReadAsStringAsync();
+                                            outputLocal = JsonSerializer.Serialize(new { error = "video_download_failed", status = (int)contentResp.StatusCode, body = bodyFail });
+                                            output = outputLocal; break;
+                                        }
+                                        var videoBytes = await contentResp.Content.ReadAsByteArrayAsync();
+                                        var filePath = $"video_{DateTime.Now:yyyyMMdd_HHmmss}.mp4";
+                                        await File.WriteAllBytesAsync(filePath, videoBytes);
+                                        var htmlPath = Path.ChangeExtension(filePath, ".html");
+                                        var html = $"<html><head><title>Video Playground</title></head><body style='background:#111;color:#eee;font-family:sans-serif'>" +
+                                                   $"<h3>Prompt</h3><pre style='white-space:pre-wrap'>{System.Web.HttpUtility.HtmlEncode(prompt)}</pre>" +
+                                                   "<h3>Video</h3>" +
+                                                   $"<video src='{Path.GetFileName(filePath)}' controls autoplay style='max-width:100%;border:1px solid #444'></video>" +
+                                                   "</body></html>";
+                                        await File.WriteAllTextAsync(htmlPath, html, Encoding.UTF8);
+                                        outputLocal = JsonSerializer.Serialize(new { video = filePath, playground = htmlPath, job = jobId, generation = genId, model = videoModel, width, height, duration });
+                                        output = outputLocal; break;
+                                    }
+                                    catch (Exception vx)
+                                    {
+                                        outputLocal = JsonSerializer.Serialize(new { error = "video_exception", message = vx.Message });
+                                        output = outputLocal; break;
+                                    }
+                                }
                             default:
                                 output = JsonSerializer.Serialize(new { error = "unknown_tool", name = call.FunctionName });
                                 break;
@@ -380,7 +637,6 @@ internal class Program
                         output = JsonSerializer.Serialize(new { error = "tool_exception", message = ex.Message });
                     }
 
-                    // feed the tool result back
                     convo.Add(new ToolChatMessage(call.Id, output));
                 }
 
@@ -388,17 +644,15 @@ internal class Program
                 if (rounds >= maxToolRounds)
                     return ("(stopped after too many tool rounds)", rounds);
 
-                continue; // next turn with tool results appended
+                continue;
             }
 
-            // final assistant reply
-            var text = completion.Content.Count > 0 ? completion.Content[0].Text : "(no text)";
-            convo.Add(new AssistantChatMessage(completion)); // keep history
-            return (text, rounds + 1);
+            var textOut = completion.Content.Count > 0 ? completion.Content[0].Text : "(no text)";
+            convo.Add(new AssistantChatMessage(completion));
+            return (textOut, rounds + 1);
         }
     }
 
-    // ===== Tool implementations =====
     static string LookupKpi(string metric)
     {
         string m = (metric ?? "").Trim().ToUpperInvariant();
@@ -410,7 +664,6 @@ internal class Program
         };
     }
 
-    // Weather REST client (Open-Meteo, no key)
     public sealed class OpenMeteoWeatherClient
     {
         private readonly HttpClient _http;
@@ -427,7 +680,7 @@ internal class Program
                 throw new InvalidOperationException("Location not found");
 
             var first = results[0];
-            double lat = first.GetProperty("latitude").GetDouble();
+            double lat = first.GetProperty("latitude" ).GetDouble();
             double lon = first.GetProperty("longitude").GetDouble();
 
             string name = first.GetProperty("name").GetString() ?? location;
