@@ -127,4 +127,11 @@ flowchart TD
 <img width="800" height="410" alt="image" src="https://github.com/user-attachments/assets/3547004a-b673-4daf-82bd-2d7f6a3206cb" />
 
 
+#2:
+Prompt:
+check current weather in Herndon, and create a video illustrating different tech professionals walking with their workstation
+
+<img width="1100" height="249" alt="image" src="https://github.com/user-attachments/assets/959c711d-90ab-490f-9f3d-7b70a269503a" />
+
+https://youtube.com/shorts/3x2gFnbPzLg?si=qFRm3IzEpoJ_sEXh
 ---
