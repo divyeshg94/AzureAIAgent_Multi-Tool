@@ -45,6 +45,61 @@ flowchart TD
 ```
 ---
 
+## Security architecture
+
+This repo demonstrates the three security pillars from the blog post
+[AI agents need security engineering, not just guardrails](#).
+
+### 1. Managed Identity (no secrets in code)
+
+The agent authenticates to Azure using `DefaultAzureCredential`.
+Locally, this resolves via `az login`. In Azure, it uses the resource's
+Managed Identity.
+
+Required role assignments:
+| Resource | Role |
+|---|---|
+| Azure AI Foundry project | Azure AI User |
+| Azure Blob Storage (if used) | Storage Blob Data Reader |
+| Azure AI Search (if used) | Search Index Data Reader |
+
+**No connection strings. No API keys. No secrets in appsettings.json.**
+
+### 2. Input validation (Security/InputGuard.cs)
+
+Every user message passes through `InputGuard.Validate()` before
+reaching the model. This checks for:
+- Obvious prompt injection patterns ("ignore previous instructions", etc.)
+- Out-of-domain inputs (anything unrelated to weather, KPIs, or media)
+- Excessive length
+
+Retrieved content (from tools or documents) is wrapped in explicit
+delimiters using `InputGuard.WrapRetrievedContent()` to separate it
+from trusted instructions in the prompt.
+
+### 3. Audit trail (Security/AgentTelemetry.cs)
+
+Every tool call is traced with OpenTelemetry and shipped to Azure
+Application Insights (when `APPLICATIONINSIGHTS_CONNECTION_STRING` is set).
+In local development, traces are written to the console.
+
+You can answer these questions for any request:
+- Which tool was called and with what input?
+- How long did it take?
+- What did it return?
+
+### Required environment variables
+
+| Variable | Purpose |
+|---|---|
+| `AZURE_AI_PROJECT_ENDPOINT` | Your Azure AI Foundry project endpoint |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | Azure Monitor (optional locally) |
+
+Set these in your local environment or in Azure App Settings.
+Do not put them in `appsettings.json` or `.env` files committed to Git.
+
+---
+
 ## Try these prompts (see multi-tool routing)
 
 - What's the temperature in Herndon in F?
